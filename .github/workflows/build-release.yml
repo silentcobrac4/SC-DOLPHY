@@ -1,0 +1,103 @@
+name: Build and Release SC DOLPHY APK
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Locate app-source.zip
+        id: locate_zip
+        run: |
+          if [ -f "app-source.zip" ]; then
+            echo "zip_path=app-source.zip" >> "$GITHUB_OUTPUT"
+          else
+            FOUND=$(find . -maxdepth 2 -iname "app-source.zip" | head -n 1)
+            if [ -z "$FOUND" ]; then
+              echo "::error::app-source.zip not found at the repository root. Upload it there first."
+              exit 1
+            fi
+            echo "zip_path=$FOUND" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract project source
+        run: |
+          mkdir -p sc-dolphy-src
+          unzip -q "${{ steps.locate_zip.outputs.zip_path }}" -d sc-dolphy-src
+
+      - name: Detect Gradle project root
+        id: detect_root
+        run: |
+          GRADLEW_PATH=$(find sc-dolphy-src -maxdepth 4 -name "gradlew" | head -n 1)
+          if [ -z "$GRADLEW_PATH" ]; then
+            SETTINGS_PATH=$(find sc-dolphy-src -maxdepth 4 \( -name "settings.gradle" -o -name "settings.gradle.kts" \) | head -n 1)
+            if [ -z "$SETTINGS_PATH" ]; then
+              echo "::error::Could not find a Gradle project (no gradlew or settings.gradle*) inside app-source.zip."
+              exit 1
+            fi
+            PROJECT_ROOT=$(dirname "$SETTINGS_PATH")
+          else
+            PROJECT_ROOT=$(dirname "$GRADLEW_PATH")
+          fi
+          echo "project_root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install required SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" > /dev/null
+
+      - name: Generate Gradle Wrapper (ensures a working gradlew regardless of what shipped in the zip)
+        working-directory: ${{ steps.detect_root.outputs.project_root }}
+        run: |
+          gradle wrapper --gradle-version 8.7 --distribution-type bin
+          chmod +x ./gradlew
+
+      - name: Build release APK
+        working-directory: ${{ steps.detect_root.outputs.project_root }}
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Find built APK(s)
+        id: find_apk
+        working-directory: ${{ steps.detect_root.outputs.project_root }}
+        run: |
+          APK_PATH=$(find . -path "*/outputs/apk/release/*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "::error::Build finished but no APK was produced in outputs/apk/release/. Failing instead of creating an empty release."
+            exit 1
+          fi
+          echo "apk_path=${{ steps.detect_root.outputs.project_root }}/${APK_PATH#./}" >> "$GITHUB_OUTPUT"
+          echo "Found APK: $APK_PATH"
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sc-dolphy-release-apk
+          path: ${{ steps.find_apk.outputs.apk_path }}
+
+      - name: Create GitHub Release with APK
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.find_apk.outputs.apk_path }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
