@@ -1,0 +1,48 @@
+name: Build SC DOLPHIN APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "SC_DOLPHIN_Source.zip"
+      - ".github/workflows/build.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Extract project ZIP
+        run: |
+          test -f SC_DOLPHIN_Source.zip
+          mkdir extracted
+          unzip -q SC_DOLPHIN_Source.zip -d extracted
+          test -f extracted/settings.gradle.kts
+          cp -a extracted/. .
+
+      - name: Build debug APK
+        run: |
+          gradle --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SC-DOLPHIN-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
